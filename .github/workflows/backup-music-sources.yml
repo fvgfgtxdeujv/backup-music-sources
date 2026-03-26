@@ -2,7 +2,7 @@ name: Full Backup Music Sources (Anti-Deletion)
 
 on:
   schedule:
-    - cron: '0 2 * * *'  # 每天凌晨2点UTC
+    - cron: '0 8 * * *'
   workflow_dispatch:
 
 env:

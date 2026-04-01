@@ -23,6 +23,7 @@ jobs:
           git config --global user.name "github-actions[bot]"
 
       - name: Read config and backup all repositories
+        shell: bash
         run: |
           DATE=$(date +%Y-%m-%d)
           WORKSPACE=$(pwd)
@@ -50,7 +51,7 @@ jobs:
             # 检查今日备份是否已存在
             if [ -f "$backup_file" ]; then
               echo "  ⏭️  跳过: 今日备份已存在"
-              ((SKIPPED_COUNT++))
+              SKIPPED_COUNT=$((SKIPPED_COUNT + 1))
               continue
             fi
             
@@ -58,7 +59,7 @@ jobs:
             
             temp_dir=$(mktemp -d)
             
-            # 完整克隆（包含.git目录和工作区）
+            # 完整克隆
             echo "  📦 克隆仓库..."
             if ! git clone --bare "$repo_url" "$temp_dir/repo.git" 2>&1; then
               echo "  ❌ 克隆失败"
@@ -66,7 +67,7 @@ jobs:
               continue
             fi
             
-            # 转为普通仓库（保留.git）
+            # 转为普通仓库
             git clone "$temp_dir/repo.git" "$temp_dir/repo" 2>&1
             
             cd "$temp_dir/repo"
@@ -78,7 +79,7 @@ jobs:
               git lfs checkout 2>&1
             fi
             
-            # 完全打包（包含.git目录）
+            # 完全打包
             cd "$temp_dir"
             tar -czf "$backup_file" "repo"
             
@@ -86,7 +87,7 @@ jobs:
             echo "  ✅ 完成: $SIZE"
             
             rm -rf "$temp_dir"
-            ((BACKUP_COUNT++))
+            BACKUP_COUNT=$((BACKUP_COUNT + 1))
             cd "$WORKSPACE"
             
           done < config.ini
@@ -94,7 +95,7 @@ jobs:
           echo ""
           echo "📊 完成: $BACKUP_COUNT 个备份, $SKIPPED_COUNT 个跳过"
 
-      - name: Clean old backups (保留最近5个)
+      - name: Clean old backups
         run: |
           for project_dir in backups/*/; do
             [ -d "$project_dir" ] || continue
@@ -113,5 +114,5 @@ jobs:
             exit 0
           fi
           
-          git commit -m "Full backup: $DATE"
+          git commit -m "Full backup: $(date +%Y-%m-%d)"
           git push

@@ -5,18 +5,15 @@ on:
     - cron: '0 8 * * *'
   workflow_dispatch:
 
-env:
-  TARGET_REPO: https://github.com/Macrohard0001/lx-ikun-music-sources.git
-
 jobs:
   backup:
     runs-on: ubuntu-latest
     
     steps:
-      - name: Checkout backup repository
+      - name: Checkout current repository (for config.ini)
         uses: actions/checkout@v4
         with:
-          lfs: true  # 启用LFS支持
+          lfs: true
           token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Setup Git LFS
@@ -25,73 +22,104 @@ jobs:
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
           git config --global user.name "github-actions[bot]"
 
-      - name: Full clone target repository
+      - name: Read config and backup all repositories
         run: |
           DATE=$(date +%Y-%m-%d)
-          BACKUP_DIR="backups/$DATE"
           
-          mkdir -p backups
-          
-          echo "开始完整克隆: $TARGET_REPO"
-          echo "备份路径: $BACKUP_DIR"
-          
-          # 完整克隆（非浅克隆，保留完整历史防删库）
-          git clone --mirror "$TARGET_REPO" "$BACKUP_DIR.git"
-          
-          # 转为普通仓库便于查看
-          git clone "$BACKUP_DIR.git" "$BACKUP_DIR"
-          rm -rf "$BACKUP_DIR.git"
-          
-          # 检查并处理LFS文件
-          cd "$BACKUP_DIR"
-          
-          # 如果原仓库有LFS，拉取LFS文件
-          if git lfs ls-files 2>/dev/null | grep -q .; then
-            echo "检测到Git LFS文件，开始拉取..."
-            git lfs fetch --all
-            git lfs checkout
+          # 读取配置文件
+          if [ ! -f "config.ini" ]; then
+            echo "错误: 未找到 config.ini 文件"
+            exit 1
           fi
           
-          # 打包（保留完整结构）
-          cd ..
-          tar -czf "${DATE}.tar.gz" "$DATE"
-          rm -rf "$DATE"
-          
-          # 计算大小
-          SIZE=$(du -h "${DATE}.tar.gz" | cut -f1)
-          echo "备份完成: ${DATE}.tar.gz (大小: $SIZE)"
+          # 逐行读取仓库URL
+          while IFS= read -r repo_url || [[ -n "$repo_url" ]]; do
+            # 跳过空行和注释行
+            [[ -z "$repo_url" || "$repo_url" =~ ^# ]] && continue
+            
+            echo "========================================"
+            echo "处理仓库: $repo_url"
+            
+            # 提取项目名称 (如 lx-ikun-music-sources)
+            repo_name=$(basename "$repo_url" .git)
+            
+            # 创建备份目录
+            backup_dir="backups/$repo_name"
+            mkdir -p "$backup_dir"
+            
+            # 检查是否已有今日备份
+            backup_file="$backup_dir/${DATE}.tar.gz"
+            if [ -f "$backup_file" ]; then
+              echo "今日备份已存在: $backup_file，跳过"
+              continue
+            fi
+            
+            temp_dir=$(mktemp -d)
+            
+            echo "开始完整克隆..."
+            # 镜像克隆保留完整历史
+            git clone --mirror "$repo_url" "$temp_dir/repo.git"
+            
+            # 转为普通仓库
+            git clone "$temp_dir/repo.git" "$temp_dir/repo"
+            rm -rf "$temp_dir/repo.git"
+            
+            cd "$temp_dir/repo"
+            
+            # 处理LFS文件
+            if git lfs ls-files 2>/dev/null | grep -q .; then
+              echo "检测到Git LFS文件，拉取中..."
+              git lfs fetch --all
+              git lfs checkout
+            fi
+            
+            # 打包
+            cd "$temp_dir"
+            tar -czf "$backup_file" "repo"
+            
+            # 计算大小
+            SIZE=$(du -h "$backup_file" | cut -f1)
+            echo "备份完成: $backup_file (大小: $SIZE)"
+            
+            # 清理临时文件
+            rm -rf "$temp_dir"
+            
+          done < config.ini
 
       - name: Track large files with Git LFS
         run: |
-          BACKUP_DIR="backups"
-          cd "$BACKUP_DIR"
-          
-          # 找到大于100MB的文件，用LFS管理
-          find . -name "*.tar.gz" -size +100M | while read file; do
+          # 查找所有大于100MB的备份文件
+          find backups -name "*.tar.gz" -size +100M | while read file; do
             echo "大文件 detected: $file ($(du -h "$file" | cut -f1))"
           done
-          
-          cd ..
 
-      - name: Clean old backups (keep 5 天之前)
+      - name: Clean old backups (每个项目保留最近5个)
         run: |
-          cd backups
-          
-          # 按文件名日期排序，保留最近5个
-          ls -1 *.tar.gz 2>/dev/null | sort -r | tail -n +6 | while read oldfile; do
-            echo "删除旧备份: $oldfile"
-            rm -f "$oldfile"
+          # 遍历每个项目的备份目录
+          for project_dir in backups/*/; do
+            if [ -d "$project_dir" ]; then
+              echo "清理: $project_dir"
+              cd "$project_dir"
+              
+              # 按文件名排序，保留最近5个，删除旧的
+              ls -1 *.tar.gz 2>/dev/null | sort -r | tail -n +6 | while read oldfile; do
+                echo "  删除旧备份: $oldfile"
+                rm -f "$oldfile"
+              done
+              
+              echo "  当前保留:"
+              ls -la *.tar.gz 2>/dev/null || echo "  无备份文件"
+              
+              cd ../..
+            fi
           done
-          
-          echo "当前保留的备份:"
-          ls -la *.tar.gz 2>/dev/null || echo "无备份文件"
 
       - name: Commit and push with LFS
         run: |
-          # 确保LFS追踪大文件
-          git lfs track "backups/*.tar.gz" 2>/dev/null || true
+          # 配置LFS追踪所有备份文件
+          git lfs track "backups/**/*.tar.gz" 2>/dev/null || true
           
-          git add .gitattributes backups/ 2>/dev/null || true
+          git add .gitattributes
           git add backups/
           
           # 检查是否有变更
@@ -100,5 +128,5 @@ jobs:
             exit 0
           fi
           
-          git commit -m "Full backup: $(date +%Y-%m-%d) [保留完整历史防删库]"
+          git commit -m "Full backup: $(date +%Y-%m-%d) [多仓库备份]"
           git push
